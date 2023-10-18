@@ -69,7 +69,7 @@ def plot_and_fill(ax, t_ax, data_list, plot_nb, total_plots, ylabel, format_axes
     format_axes(ax,**format_axes_pars)
     ax.set_ylabel(ylabel, fontsize=15)
     if int(str(plot_nb)[-1]) == total_plots:
-        ax.set_xlabel('Time', fontsize=15,rotation=45)
+        ax.set_xlabel('Time', fontsize=15)
 
     for data, line_opts in zip(data_list, line_opts_list):
         ax.plot(t_ax, data, **line_opts)
@@ -164,7 +164,7 @@ def prepare_plot_parameters(biosignal_object,sampling_f,plot_type,window_length)
 
 def plot_by_type(plot_type,ax_,data,t_ax,wl,stimulation_areas):
     plot_nb = 1
-    total_plots=1
+    total_plots=2 # Ignored for now
     global rotation_angle  # Declare the variable as global to modify its value
 
     if (plot_type =='ecg'):
@@ -362,10 +362,10 @@ def plot_by_type(plot_type,ax_,data,t_ax,wl,stimulation_areas):
                 # alpha_value = max(0, min(1, 1 - (max_index - i) * 0.05))
                 alpha_value = max(0, min(1, 1 / (0.5*(max_index-i+1))))
 
-                ax_.plot(h_data[i-1:i+1, 0], h_data[i-1:i+1, 1], h_data[i-1:i+1, 2], linewidth=2,linestyle='-', c='black', alpha=alpha_value)
+                ax_.plot(h_data[i-1:i+1, 0], h_data[i-1:i+1, 1], h_data[i-1:i+1, 2], linewidth=2,linestyle='-', c='gray', alpha=alpha_value)
                 
                 if i == max_index:  # Only plot the latest scatter point with an alpha of 1
-                    ax_.scatter(h_data[i, 0], h_data[i, 1], h_data[i, 2], c=color, s=70,marker='*', label=label, alpha=1)
+                    ax_.scatter(h_data[i, 0], h_data[i, 1], h_data[i, 2], c=color, s=90,marker='*', label=label, alpha=1)
                 else:
                     ax_.scatter(h_data[i, 0], h_data[i, 1], h_data[i, 2], c=color, s=50, alpha=alpha_value)
         
@@ -403,10 +403,6 @@ def plot_data(fig,
     
     # Update the stimulation_areas
     stimulation_areas = verify_areas(stimulation_areas,timezone)
-
-    # Get total number of plots
-    # total_plots = len(plots_to_display)
-
     row_index = 0
 
     for plot_type in plots_to_display:
