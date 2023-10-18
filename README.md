@@ -9,6 +9,10 @@ This project provides an integrated solution for streaming and analyzing biometr
 
 
 ## Features
+<p float='left'>
+<img src="0-Assets/images/sample_session_plot.png" width="950" />
+</p>
+
 1. **Live Data Processing**: Capable of performing real-time data analysis, including filtering, calculating heart rate from ECG data, and breathing rate from accelerometer data. It can also integrate readings from multiple sources (e.g., PPG, ECG, and accelerometer) to improve the accuracy by mitigating movement artifacts.
 2. **Expandable Device Support**: Architecture allows for straightforward addition of new input and stimulation devices to run concurrently.
 3. **Device Mapping**: Provides flexibility to map input devices to stimulation devices, supporting various configurations (one-to-one, one-to-all, all-to-one, etc.)
@@ -57,6 +61,12 @@ The application saves the streamed data, processed signals, and analysis results
 ## How it Works
 
 The application uses the asyncio library for concurrent execution of data streaming, processing, and analysis tasks. The data from the devices is streamed using the bluepy library for Bluetooth communication. For signal processing and analysis, it leverages libraries such as NeuroKit and NumPy.
+It allows for the plotting of various metrics for EEG, such as frequency band power, entropy, and correlation, in both the frequency and time domains.
+
+<p float="left">
+  <img src="0-Assets/images/eeg_animation.gif" width="350" />
+
+</p>
 
 ## Dependencies/Acknowledgements
 

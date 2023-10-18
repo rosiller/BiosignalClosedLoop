@@ -87,8 +87,6 @@ class EEG:
             self._stop_muse()
         self.streaming_active=False
      
-
-
     def push_sample(self, marker, timestamp):
         """Universal method for pushing a marker and its timestamp to store alongside the EEG data.
 

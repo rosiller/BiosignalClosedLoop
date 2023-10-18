@@ -6,13 +6,14 @@ import os
 import asyncio
 import copy 
 import concurrent
-from datetime import datetime
-from .plotting_utils import plot_data
+from datetime import datetime,timedelta
+from .plotting_utils import plot_data,plot_config
 import matplotlib.pyplot as plt
 import _tkinter
 from .stimulator_class import StimulationManager
 from .decision_models_class import DecisionModel
 from .recordingdevice_class import Muse2, Cyton, PolarH10_recorder
+import time 
 
 class RecordingSession:
     
@@ -21,7 +22,7 @@ class RecordingSession:
 
     SAVE_DIRECTORY = os.path.join("1-Data","1-Raw")
 
-    def __init__(self,input_devices,stimulation_devices=[],decision_model=DecisionModel):
+    def __init__(self,input_devices,stimulation_devices=[],decision_model=DecisionModel,window_length={}):
 
         self.input_devices  = input_devices 
         
@@ -42,8 +43,14 @@ class RecordingSession:
         self.durations_added = False
         self.cleaned = False
         self.segmented = False
-        self.fig = plt.figure(figsize=[14,8])
+        
+        # Plotting variables
+        # self.fig = plt.figure(figsize=[14,8])
+        self.fig = plt.figure(figsize=[15,10])
+        self.window_length = window_length
+        self.plots_to_display_,self.total_plots_,self.gs_,self.eeg_3d_score_present_ = plot_config(self.data.copy(),window_length=self.window_length)
         self.is_jupyter = is_jupyter()
+        self.spinner_ind = 0 
 
         # Stimulation variables
         self.stimulation_devices = stimulation_devices
@@ -77,11 +84,12 @@ class RecordingSession:
         return class_info
    
     def add_notes(self, note):
-        self.notes += f"{datetime.now()}: {note}\n"
-    
-    async def collect_data(self,rec_time=50,window_length =0):
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Format datetime
+        self.notes += f"{current_time}: {note}\n"
+
+    async def collect_data(self,rec_time=50):
         
-        window_length_valid = validate_window_length(window_length)
+        # window_length_valid = validate_window_length(window_length)
 
         self.loop = asyncio.get_event_loop()
 
@@ -105,7 +113,7 @@ class RecordingSession:
                 self.stimulation_periods_dict = {stimulator.name:stimulator.stimulation_periods_list for stimulator in self.stimulation_devices} # Could in theory just update every time there's a new value
 
             # Plot the signals
-            self.plot(window_length)
+            self.plot()
         self.get_durations()
         await self.stop_devices()
         self.generate_stimulation_df()
@@ -123,6 +131,7 @@ class RecordingSession:
     async def connect_all(self):
         # Run sync tasks
         self.connect_all_sync()
+        time.sleep(10)
 
         # Run async tasks
         await self.connect_all_async()
@@ -217,8 +226,15 @@ class RecordingSession:
                                         f"{getattr(self,f'{data_src}_duration')}\n"
         return session_data_info
     
-    def plot(self,window_length=0):
-    
+    def plot(self):
+        spinners = ['-', '\\', '|', '/']
+        
+        self.spinner_ind+=1
+        if self.spinner_ind>=3:
+            self.spinner_ind = 0
+
+        spinner = ['-', '\\', '|', '/']  # spinner frames
+
         # Adjust for calling it in jupyter notebook
         if not self.is_jupyter:
             try:
@@ -228,18 +244,26 @@ class RecordingSession:
         else:
             clear_output(wait=True)
 
-        if len(window_length)>0:
+        if len(self.window_length)>0:
            
             self.fig = plot_data(self.fig,
-                               self.data.copy(),
+                                self.data.copy(),
                                 sampling_f=self.aux_dict,
-                                window_length=window_length,
+                                plots_to_display=self.plots_to_display_,
+                                total_plots=self.total_plots_,
+                                gs = self.gs_,
+                                eeg_3d_score_present=self.eeg_3d_score_present_,
+                                window_length=self.window_length,
                                 stimulation_areas = copy.deepcopy(self.stimulation_periods_dict),
                                 timezone=self.tz)
             
             plt.pause(0.001)
             # plt.show()
-        else:   # TODO: maybe print elapsed time?
+        else:   
+            message='Collecting '+spinner[self.spinner_ind]
+            print('\b' * len(message), end="", flush=True)
+
+            print(message,end='',flush=True)
             pass 
 
     def reset_devices(self):
@@ -268,6 +292,13 @@ class RecordingSession:
         # Save notes
         with open(f"{id_directory}/{biosignal_object.source_device.capitalize()}_{self.id}_notes.txt", "w") as f:
             f.write(self.notes)
+        
+        # Save plot if a figure is provided
+        if self.fig:
+            plot_filepath = f"{id_directory}/session_plot.png"
+            self.fig.savefig(plot_filepath, dpi=300, bbox_inches='tight')
+            plt.close(self.fig)  # Close the figure after saving
+
 
     async def start_devices(self):
         
@@ -314,7 +345,7 @@ def merge_dicts(dict_list):
     for d in dict_list:
         result = {**result, **d}
     return result
-
+    
 def validate_window_length(window_length):
     valid_keys = set(list(Muse2.aux_dict.keys()) + list(Cyton.aux_dict.keys()) + list(PolarH10_recorder.aux_dict.keys()))
 

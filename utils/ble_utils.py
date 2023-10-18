@@ -1,5 +1,6 @@
 from bleak import BleakClient,BleakScanner
 import logging
+import asyncio
 
 async def connect_ble(client, address, device_name, device_type):
      # Confirm the address
@@ -15,10 +16,12 @@ async def connect_and_run(device_name,address,device_type, client, run_func):
     
     # Confirm the address
     address = await discover(device_name,address,device_type)
+    print(f'Attempting to connect to {address}')
 
     try:
         if client is None:
             client = BleakClient(address)
+            print(f'Connecting to {address}')
             await client.connect()
             print("---------Device connected--------------", flush=True)
 
@@ -39,11 +42,11 @@ async def disconnect_ble(client):
         return not client.is_connected
         
 async def discover(device_name, address=None,device_type='GVS'):
+    print("---------Looking for Device------------ ", flush=True)
     scanner = BleakScanner()
-    devices = await scanner.discover()
+    devices = await scanner.discover(timeout=15)
 
     devices_list = []
-    print("---------Looking for Device------------ ", flush=True)
 
     for d in devices:
         # print(d.name)

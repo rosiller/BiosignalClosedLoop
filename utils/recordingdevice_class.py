@@ -4,13 +4,14 @@ import numpy as np
 import pandas as pd
 from pylsl import StreamInlet,resolve_stream 
 import re
-from typing import Tuple
+from scipy.signal import welch
+from typing import List, Any, Union, Tuple
 from .breathing_rate_utils import calculate_breathing_rate,calculate_breathing_signal
 from .eeg_class import EEG
-from .eeg_utils import filter_eeg,get_score_accum
+from .eeg_utils import filter_eeg,get_score_accum,get_eeg_randomness,get_eeg_correlation,process_hemispheres_scores,get_3d_score_accum
 from .hr_utils import get_hr
 from .polar_class import PolarH10
-from .simulation_utils import update_live_data,fixed_gen
+from .simulation_utils import update_live_data,random_gen,fixed_gen
 
 class BiosignalData:
     def __init__(self, data_name:str,source_device:str,aux_dict:dict={},data:pd.DataFrame=pd.DataFrame()):
@@ -126,6 +127,15 @@ class RecordingDevice:
         self.start_time =  datetime.now() # To be overwritten later when recording starts
         self.uses_asyncio = False
 
+        # Overwritten by subclass of RecordingDevice
+        self.channels =[] #['TP9', 'AF7', 'AF8', 'TP10'] 
+        self.fs = 0
+
+        # Additional hardcoded parameters for derivables
+        self.eeg_window_size = 256 # 
+        self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
+
+
         if self.simulated:
             self.initialize_simulated_signal()
             # TODO: change the rec_time to the max length of the data
@@ -147,22 +157,75 @@ class RecordingDevice:
             # TODO: add Timestamp column 
             self.data['br'].add_timestamps()
 
-    def compute_eeg_score(self):
-        # TODO consider adding delay
-        score_accum = get_score_accum(self.data['eeg_filt'].data,
-                                      self.data['eeg_score'].data,
-                                      window_size=512,
-                                      channels = self.channels,
-                                      fs=self.aux_dict['eeg']['sampling_f'])
-        
-        self.data['eeg_score'].data = score_accum 
-
     def compute_derivables(self):
         # Run the derivables
         for data_src,biosignaldata_object in self.data.items():
             if biosignaldata_object.computable:
                 getattr(self,f'compute_{data_src}')()
+        
+        # Reset the eeg_instantaneous_psd
+        self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
 
+    def compute_eeg_score(self):
+         
+        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
+            self.get_last_psd_all_eeg_channels()
+
+        # TODO consider adding delay
+        score_accum = get_score_accum(self.eeg_instantaneous_psd,
+                                      self.data['eeg_score'].data)
+        
+        self.data['eeg_score'].data = score_accum 
+
+    def get_last_psd_all_eeg_channels(self):
+        # Assuming eeg_filt has already been computed
+        if len(self.data['eeg_filt'].data)>=self.eeg_window_size:
+            
+            segment = self.data['eeg_filt'].data.drop(columns='Timestamp')[-self.eeg_window_size:]
+            
+            # If the eeg is all zeros set the psd to zeros too
+            if not (segment==0).all().all():
+                freqs,psd_array = welch(segment, fs=self.fs, axis=0)
+            else:
+                psd_array = np.zeros(shape=(1,len(self.channels)))
+                freqs = [0]
+            self.eeg_instantaneous_psd = pd.DataFrame(data=psd_array,columns=self.channels,index=freqs)
+        
+        # If not enough data then leave it empty
+        else:
+            self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
+
+    def compute_eeg_randomness(self):
+        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
+           self.get_last_psd_all_eeg_channels()
+
+        if not (self.eeg_instantaneous_psd==0).all().all():
+            eeg_randomness = get_eeg_randomness(self.eeg_instantaneous_psd)
+            
+            self.data['eeg_randomness'].data = self.data['eeg_randomness'].data.append(eeg_randomness,ignore_index=True)
+    
+    def compute_eeg_3d_score(self):
+        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
+            self.get_last_psd_all_eeg_channels()
+        df_left,df_right = process_hemispheres_scores(self.eeg_instantaneous_psd,freq_bands=['Delta', 'Theta', 'Alpha'] )
+        self.data['eeg_3d_score'].data = get_3d_score_accum(self.data['eeg_3d_score'].data,df_left,df_right)
+    
+    def compute_eeg_time_correlation(self):
+        time_segment = self.data['eeg_filt'].data.iloc[-self.eeg_window_size:]
+        if not (time_segment==0).all().all():
+            eeg_correlation = get_eeg_correlation(time_segment)
+            
+            self.data['eeg_time_correlation'].data = self.data['eeg_time_correlation'].data.append(eeg_correlation,ignore_index=True)
+    
+    def compute_eeg_frequency_correlation(self):
+        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
+           self.get_last_psd_all_eeg_channels()
+
+        if not (self.eeg_instantaneous_psd==0).all().all():
+            eeg_correlation = get_eeg_correlation(self.eeg_instantaneous_psd)
+            
+            self.data['eeg_frequency_correlation'].data = self.data['eeg_frequency_correlation'].data.append(eeg_correlation,ignore_index=True)
+    
     def compute_eeg_filt(self):
         self.compute_latest_data('eeg','eeg_filt', 
                                  self.preprocess_data, 
@@ -320,6 +383,26 @@ class Muse2(RecordingDevice):
                        'sampling_f':0.5,
                        'priority':['eeg','eeg_filt'],
                        'spacing':'\t'},
+                'eeg_randomness':{'name':'EEG Randomness ',
+                       'data_columns':['Left Hemisphere','Right Hemisphere','Delta'],
+                       'sampling_f':0.5,
+                       'priority':['eeg','eeg_filt'],
+                       'spacing':'\t'},
+                'eeg_time_correlation':{'name':'EEG Time correlation ',
+                       'data_columns':['Left Hemisphere','Right Hemisphere'],
+                       'sampling_f':0.5,
+                       'priority':['eeg','eeg_filt'],
+                       'spacing':'\t'},
+                'eeg_frequency_correlation':{'name':'EEG Frequency correlation ',
+                       'data_columns':['Left Hemisphere','Right Hemisphere'],
+                       'sampling_f':0.5,
+                       'priority':['eeg','eeg_filt'],
+                       'spacing':'\t'},
+                'eeg_3d_score':{'name':'EEG 3D Score ',
+                       'data_columns':['L_Delta','L_Theta','L_Alpha','R_Delta','R_Theta','R_Alpha'],
+                       'sampling_f':0.5,
+                       'priority':['eeg','eeg_filt'],
+                       'spacing':'\t'},
                 'acc':{'name':'Acceleration',
                        'data_columns':['X','Y','Z'],
                        'sampling_f':200, # To confirm
@@ -338,6 +421,8 @@ class Muse2(RecordingDevice):
                 }
     
     def __init__(self, input_string):
+        # ACC: X points behind the head, Y to the left and Z to the top
+        #  
         # Input string contains the data sources or the stimulation
         super().__init__(input_string)
         self.device_name = 'muse2'
@@ -356,7 +441,7 @@ class Muse2(RecordingDevice):
         if not self.simulated:
 
             self.stream_object.start(fn="None",
-                                    eeg=True,
+                                    eeg='eeg' in self.data_sources,
                                     ppg= 'ppg' in self.data_sources,
                                     acc='acc' in self.data_sources,
                                     gyro= 'gyro' in self.data_sources)

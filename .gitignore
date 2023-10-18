@@ -1,2 +1,4 @@
 1-Data/1-Raw/*
 utils/obsolete_funcs.py
+mbientlab_test.py
+utils/__pycache__/*
