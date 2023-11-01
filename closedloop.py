@@ -40,7 +40,7 @@ if __name__ == "__main__":
                 #    Cyton('eeg'),  # For openbci
                 # Muse2('eeg eeg_filt eeg_score acc gyro'), #eeg_filt eeg_score
                 # Muse2('eeg eeg_filt eeg_score eeg_randomness eeg_time_correlation eeg_frequency_correlation'), #eeg_filt eeg_score
-                Muse2('eeg eeg_filt eeg_randomness eeg_time_correlation eeg_3d_score'),
+                Muse2('eeg eeg_filt'),
                 PolarH10_recorder('ecg ecg_hr acc bmag br'), # Available: ecg, ecg_hr, acc, bmag, br, "hr"
                 ]    
     

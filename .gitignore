@@ -2,3 +2,4 @@
 utils/obsolete_funcs.py
 mbientlab_test.py
 utils/__pycache__/*
+launch.json

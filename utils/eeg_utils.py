@@ -3,10 +3,12 @@ import numpy as np
 from scipy.signal import welch
 from scipy.stats import entropy as scipy_entropy
 import pandas as pd
+import asrpy
+import mne
 
 EEG_FREQ_BANDS = {'delta':[0.5,4],'theta':[4,8],'alpha':[8,12],'beta':[12,35],'gamma':[35,119]}
 
-def add_virtual_timestamps(df):
+def add_virtual_timestamps(df:pd.DataFrame)->pd.DataFrame:
     """
     This function adds a new column to a DataFrame that assigns a virtual timestamp to each unique cycle of 
     bands in the 'Band' column.
@@ -75,10 +77,44 @@ def concat_score_df_to_accum_df(score_df: pd.DataFrame, score_accum: pd.DataFram
 
     return score_accum
 
-def filter_eeg(eeg,f_low=0.5,f_high=40,fs=256):
-    # Takes in only the df with the channel columns
-    eeg_filt= notch_filter(eeg,freq=50, quality_factor=80, fs=fs) # Mindmonitor data has somehow a high freq component at this frequency
-    eeg_filt = butter_bandpass_filter(eeg_filt,f_low,f_high,fs)
+def filter_eeg(eeg: pd.DataFrame, f_low: float = 0.5, f_high: float = 40, fs: int = 256, with_mne: bool = False) -> np.array:
+    """
+    Filters EEG data by applying bandpass and notch filters, and optionally an ASR (Artifact Subspace Reconstruction).
+    
+    Parameters:
+    eeg (pd.DataFrame): Input EEG data as a DataFrame.
+    f_low (float, optional): Low cutoff frequency for the bandpass filter. Default is 0.5 Hz.
+    f_high (float, optional): High cutoff frequency for the bandpass filter. Default is 40 Hz.
+    fs (int, optional): Sampling frequency of the EEG data. Default is 256 Hz.
+    with_mne (bool, optional): Whether to use MNE for filtering and ASR. Default is False.
+    
+    Returns:
+    np.array: Filtered EEG data.
+    """
+    # Check if MNE should be used for filtering and ASR
+    if with_mne:
+        # Initialize the ASR with given sampling frequency and cutoff
+        asr = asrpy.ASR(sfreq=fs, cutoff=20)
+        
+        # Create MNE info structure with channel names and types
+        info = mne.create_info(ch_names=eeg.columns.to_list(), ch_types=["eeg"] * 4, sfreq=fs)
+        
+        # Create an MNE RawArray and apply bandpass and notch filters
+        eeg_mne = mne.io.RawArray(eeg.T, info).filter(l_freq=f_low, h_freq=f_high, verbose=0).notch_filter(50, verbose=0)
+        
+        # Fit the ASR model
+        asr.fit(eeg_mne)
+        
+        # Transform the EEG data using the ASR model and transpose the result
+        eeg_filt = asr.transform(eeg_mne)._data.T
+    else:
+        # Apply a notch filter to remove 50 Hz component (likely powerline interference)
+        eeg_filt = notch_filter(eeg, freq=50, quality_factor=80, fs=fs)
+        
+        # Apply a bandpass filter to keep frequencies between f_low and f_high
+        eeg_filt = butter_bandpass_filter(eeg_filt, f_low, f_high, fs)
+    
+    # Return the filtered EEG data
     return eeg_filt
 
 def get_band_score(eeg_fft: pd.DataFrame, band: str) -> pd.Series:
@@ -115,32 +151,99 @@ def get_band_score(eeg_fft: pd.DataFrame, band: str) -> pd.Series:
 
     return band_values
 
-def get_eeg_randomness(psd):
-   
+def get_eeg_randomness(psd: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates the randomness of EEG data based on the Power Spectral Density (PSD).
+    
+    Parameters:
+    psd (pd.DataFrame): Input PSD as a DataFrame.
+    
+    Returns:
+    pd.DataFrame: A DataFrame containing the calculated randomness for the left hemisphere,
+                  right hemisphere, and the difference (Delta) between them.
+    """
+    
+    # Measure randomness from the PSD
     randomness = measure_randomness(psd)
-    left = randomness[['TP9','AF7']].mean(axis=1)
-    right = randomness[['AF8','TP10']].mean(axis=1)
+    
+    # Calculate the mean randomness for left hemisphere electrodes (TP9, AF7)
+    left = randomness[['TP9', 'AF7']].mean(axis=1)
+    
+    # Calculate the mean randomness for right hemisphere electrodes (AF8, TP10)
+    right = randomness[['AF8', 'TP10']].mean(axis=1)
+    
+    # Create a new DataFrame to store the calculated randomness measures
     randomness_df = pd.DataFrame({
-        'Left Hemisphere': left,
-        'Right Hemisphere': right,
-        'Delta': left - right
-    })  
+        'Left Hemisphere': left,  # Randomness of the left hemisphere
+        'Right Hemisphere': right,  # Randomness of the right hemisphere
+        'Delta': left - right  # Difference between the left and right hemisphere randomness
+    })
+    
+    # Return the resulting DataFrame
     return randomness_df
 
-def compute_correlation(data1, data2):
+def compute_correlation(data1: pd.Series, data2: pd.Series) -> float:
+    """
+    Computes the Pearson correlation coefficient between two data series.
+    
+    Parameters:
+    data1 (pd.Series): The first data series.
+    data2 (pd.Series): The second data series.
+    
+    Returns:
+    float: The Pearson correlation coefficient between the two input data series.
+    """
+    
+    # Calculate the Pearson correlation coefficient between the two input data series
+    # The function returns a matrix, where the value at position [0, 1] is the correlation coefficient between data1 and data2
     return np.corrcoef(data1, data2)[0, 1]
 
-def get_eeg_correlation(eeg_data):
-    correlation = pd.DataFrame(columns=['Left Hemisphere','Right Hemisphere'])
-    left = compute_correlation(eeg_data['TP9'],eeg_data['AF7'])
-    right = compute_correlation(eeg_data['TP10'],eeg_data['AF8'])
-    correlation = correlation.append({'Left Hemisphere':left,'Right Hemisphere':right},ignore_index=True)
+def get_eeg_correlation(eeg_data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates the Pearson correlation coefficient between pairs of EEG channels,
+    one pair for the left hemisphere and one pair for the right hemisphere.
+    
+    Parameters:
+    eeg_data (pd.DataFrame): DataFrame containing the EEG data with columns named after EEG channels.
+    
+    Returns:
+    pd.DataFrame: A DataFrame containing the calculated correlation coefficients for the specified pairs of channels.
+    """
+    
+    # Creating an empty DataFrame with specified columns to store the correlation results
+    correlation = pd.DataFrame(columns=['Left Hemisphere', 'Right Hemisphere'])
+    
+    # Computing the Pearson correlation coefficient between the TP9 and AF7 channels (Left Hemisphere)
+    left = compute_correlation(eeg_data['TP9'], eeg_data['AF7'])
+    
+    # Computing the Pearson correlation coefficient between the TP10 and AF8 channels (Right Hemisphere)
+    right = compute_correlation(eeg_data['TP10'], eeg_data['AF8'])
+    
+    # Appending the calculated correlation coefficients to the correlation DataFrame
+    correlation = correlation.append({'Left Hemisphere': left, 'Right Hemisphere': right}, ignore_index=True)
+    
+    # Returning the DataFrame containing the correlation coefficients
     return correlation
 
-def get_score_accum(psd,score_accum):
-    scores = get_scores(psd,weight=True)
-    score_accum = concat_score_df_to_accum_df(scores,score_accum)
-
+def get_score_accum(psd: pd.DataFrame, score_accum: pd.DataFrame) -> pd.DataFrame:
+    """
+    Retrieves scores from the given Power Spectral Density (PSD) DataFrame and accumulates them in another DataFrame.
+    
+    Parameters:
+    psd (pd.DataFrame): Input DataFrame containing the PSD.
+    score_accum (pd.DataFrame): DataFrame where the retrieved scores are to be accumulated.
+    
+    Returns:
+    pd.DataFrame: Updated DataFrame containing the accumulated scores.
+    """
+    
+    # Getting scores from the PSD, weights can be applied to the scores
+    scores = get_scores(psd, weight=True)
+    
+    # Concatenating the newly retrieved scores to the existing accumulated scores DataFrame
+    score_accum = concat_score_df_to_accum_df(scores, score_accum)
+    
+    # Returning the updated DataFrame containing the accumulated scores
     return score_accum
 
 def get_scores(eeg_fft: pd.DataFrame, weight: bool = True) -> pd.DataFrame:
@@ -176,7 +279,7 @@ def get_scores(eeg_fft: pd.DataFrame, weight: bool = True) -> pd.DataFrame:
             
     return pd.DataFrame(scores).T
 
-def rename_columns_based_on_index(df):
+def rename_columns_based_on_index(df:pd.DataFrame)->pd.DataFrame:
     """
     Rename columns based on the index value, prefixing column names with 
     L_ or R_ depending on whether the index contains 'Left_Hemisphere' or 'Right_Hemisphere'.
@@ -198,17 +301,33 @@ def rename_columns_based_on_index(df):
     df.columns = [prefix + col for col in df.columns]
     return df.reset_index(drop=True)
 
-def get_3d_score_accum(accum_data, df_left,df_right):
+def get_3d_score_accum(accum_data: pd.DataFrame, df_left: pd.DataFrame, df_right: pd.DataFrame) -> pd.DataFrame:
+    """
+    Accumulate 3D scores from two DataFrames (representing left and right data) into a single DataFrame.
     
+    Parameters:
+    accum_data (pd.DataFrame): DataFrame where the 3D scores are to be accumulated.
+    df_left (pd.DataFrame): DataFrame containing scores for the left.
+    df_right (pd.DataFrame): DataFrame containing scores for the right.
+    
+    Returns:
+    pd.DataFrame: Updated DataFrame containing the accumulated 3D scores.
+    """
+    
+    # Renaming columns of the input DataFrames based on their indices
     df_right = rename_columns_based_on_index(df_right.copy())
     df_left = rename_columns_based_on_index(df_left.copy())
-
-    # accum_data = pd.concat([accum_data, df_left, df_right], axis=0).reset_index(drop=True)
-    new_row = pd.concat([df_left,df_right],axis=1)
-    accum_data = pd.concat([accum_data,new_row],axis=0).reset_index(drop=True)
+    
+    # Concatenating df_left and df_right horizontally (columns)
+    new_row = pd.concat([df_left, df_right], axis=1)
+    
+    # Adding the concatenated row to the accum_data DataFrame
+    accum_data = pd.concat([accum_data, new_row], axis=0).reset_index(drop=True)
+    
+    # Returning the updated DataFrame containing the accumulated 3D scores
     return accum_data
 
-def process_hemispheres_scores(psd, freq_bands=['Delta', 'Theta', 'Alpha']):
+def process_hemispheres_scores(psd:pd.DataFrame, freq_bands:list=['Delta', 'Theta', 'Alpha'])->pd.DataFrame:
     """
     Process the hemispheres and return dataframes for each.
     
@@ -243,7 +362,7 @@ def process_hemispheres_scores(psd, freq_bands=['Delta', 'Theta', 'Alpha']):
 
     return df_left, df_right
 
-def measure_randomness(psd):
+def measure_randomness(psd:pd.DataFrame)->pd.DataFrame:
     
     psd_entropy = scipy_entropy(psd)
     

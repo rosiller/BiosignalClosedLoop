@@ -14,131 +14,133 @@ from .polar_class import PolarH10
 from .simulation_utils import update_live_data,random_gen,fixed_gen
 
 class BiosignalData:
-    def __init__(self, data_name:str,source_device:str,aux_dict:dict={},data:pd.DataFrame=pd.DataFrame()):
-        self.source_device = source_device # The device which is generating this data {muse2,cyton,polarh10}
-        self.aux_dict = aux_dict # contains the name, data columns, fs, etc
-        self.computable = self.aux_dict['priority']!= None
-        self.data_name = data_name # 'eeg', 'acc', 'eeg_filt', ...
-        self.sample_counter=0
-        self.start_time =  datetime.now() # To be overwritten later to actual recording start time 
-        self.fs = self.aux_dict['sampling_f']
-        self.data =  pd.DataFrame(columns=['Timestamp']+self.aux_dict['data_columns']) if data.empty else data
-         
+    def __init__(self, data_name:str, source_device:str, aux_dict:dict={}, data:pd.DataFrame=pd.DataFrame()):
+        """
+        Initializes a BiosignalData object.
+
+        :param data_name: Name of the biosignal data type (e.g., 'eeg', 'acc', 'eeg_filt')
+        :param source_device: The source device name which is generating the data (e.g., 'muse2', 'cyton', 'polarh10')
+        :param aux_dict: A dictionary containing auxiliary data such as name, data columns, sampling frequency, etc.
+        :param data: An optional dataframe to initialize with data.
+        """
+        self.source_device = source_device  # Device generating this data
+        self.aux_dict = aux_dict  # Contains additional information like name, data columns, fs, etc.
+        self.computable = self.aux_dict['priority'] != None  # Determines if data is computable based on priority
+        self.data_name = data_name  # Type of biosignal data
+        self.sample_counter = 0
+        self.start_time = datetime.now()  # Initializes with current time but will be overwritten with actual recording start time 
+        self.fs = self.aux_dict['sampling_f']  # Sampling frequency
+        # Initializes the data with the given columns or the provided dataframe
+        self.data = pd.DataFrame(columns=['Timestamp'] + self.aux_dict['data_columns']) if data.empty else data
+
     @property
     def empty(self):
-      return self.data.empty
+        """Returns True if the data is empty, else False."""
+        return self.data.empty
     
     def get_last_n_seconds(self, n):
-        # If the DataFrame is empty, return it
+        """
+        Retrieves the data from the last 'n' seconds.
+
+        :param n: Number of seconds to look back.
+        :return: Data from the last 'n' seconds without the 'Timestamp' column and a flag indicating if requested range is fully covered.
+        """
         if self.data.empty:
             return self.data.drop(columns='Timestamp'), False
 
-        # Get the timestamp for n seconds ago
         self.data['Timestamp'] = pd.to_datetime(self.data['Timestamp'], unit='s')
         n_seconds_ago = self.data['Timestamp'].max() - pd.Timedelta(seconds=n)
-
-        # Calculate the actual range covered by the data
         actual_range = (self.data['Timestamp'].max() - self.data['Timestamp'].min()).total_seconds()
-
-        # Set the flag indicating whether the requested range is fully covered
         fully_elapsed = actual_range >= n
-
-        # Select only the rows in the DataFrame that are from the last n seconds
         last_n_seconds_data = self.data[self.data['Timestamp'] > n_seconds_ago]
 
-        # Drop the 'Timestamp' column and return the DataFrame
         return last_n_seconds_data.drop(columns='Timestamp'), fully_elapsed
 
-
     def add_timestamps(self):
+        """Adds timestamps to the data based on the sampling rate and the start time."""
         num_new_samples = len(self.data)
         new_timestamps = [self.start_time + timedelta(seconds=self.sample_counter / self.fs + i / self.fs) 
-                            for i in range(num_new_samples)]
-        
+                          for i in range(num_new_samples)]
         self.data['Timestamp'] = new_timestamps 
-
-        # Update the sample counter
         self.sample_counter += num_new_samples
 
     def append(self, other, ignore_index=True):
+        """Appends another dataframe to the existing data."""
         self.data = self.data.append(other, ignore_index=ignore_index)
-    
+
     def collect_data(self, new_data_chunk):
         """
-        Collect a new chunk of data. The new data should be a list of values.
-        Not using the pulled timestamps because Polar's are wrong
+        Collects a new chunk of data. The new data should be a list of values.
+        
+        :param new_data_chunk: New chunk of data to be collected.
         """
         num_new_samples = len(new_data_chunk)
-
         if num_new_samples > 0:
-
-            # Create a DataFrame from the new data chunk
             if self.data_name == 'eeg' and self.source_device == 'muse2':
-                pulled_data = pd.DataFrame(new_data_chunk, columns=self.aux_dict['data_columns']+['aux']).drop(columns='aux')
-            
+                pulled_data = pd.DataFrame(new_data_chunk, columns=self.aux_dict['data_columns'] + ['aux']).drop(columns='aux')
             else:
                 pulled_data = pd.DataFrame(new_data_chunk, columns=self.aux_dict['data_columns'])
 
-            if self.data_name == 'eeg' and self.source_device=='cyton':
-               
-                self.data = self.data.append(new_data_chunk) # Including timestamp
-                
-                # Drop duplicates
+            if self.data_name == 'eeg' and self.source_device == 'cyton':
+                self.data = self.data.append(new_data_chunk)
                 subset_cols = [col for col in self.data.columns if col != 'Timestamp']
                 self.data = self.data.drop_duplicates(subset=subset_cols)
-
-                # Update the corrected timestamps
-                # Calculate correct timestamps for the new chunk
                 new_timestamps = pd.date_range(start=self.start_time, periods=len(self.data), freq=f'{1/self.fs}S')
                 self.data['Timestamp'] = new_timestamps
-
             else:
-
-                # Calculate correct timestamps for the new chunk
                 new_timestamps = [self.start_time + timedelta(seconds=self.sample_counter / self.fs + i / self.fs) 
-                            for i in range(num_new_samples)]
-                
-                # Add the 'Timestamp' column to the DataFrame
+                                  for i in range(num_new_samples)]
                 pulled_data['Timestamp'] = new_timestamps
-
-                # Append the new data chunk to the accumulator
                 self.data = self.data.append(pulled_data, ignore_index=True)
 
-            # Update the sample counter
             self.sample_counter += num_new_samples
         
     def compute_duration(self):
+        """Computes the duration of the data."""
         self.duration = str(self.data['Timestamp'].iloc[-1] - self.data['Timestamp'].iloc[0])
 
-    def drop_duplicates(self,inplace):
+    def drop_duplicates(self, inplace):
+        """Drops duplicate rows from the data."""
         self.data.drop_duplicates(inplace=inplace)
         
-    def save_data(self,filename):
+    def save_data(self, filename):
+        """Saves the data to a CSV file."""
         self.data.to_csv(filename, index=False)
 
 class RecordingDevice:
-   
-    def __init__(self,input_string):
-        # input_str. ex. 'polar ecg hr br'
-        #            ex. 'muse eeg eeg_filt'
-        self.input_string = input_string
-        self.simulated,self.data_sources = analyze_input(input_string)
-        self.timestamps_placed = False
-        self.start_time =  datetime.now() # To be overwritten later when recording starts
-        self.uses_asyncio = False
+    def __init__(self, input_string: str):
+        """
+        Initializes the RecordingDevice object.
+        
+        Parameters:
+        input_string (str): A string that specifies data sources. e.g., 'polar ecg hr br' or 'muse eeg eeg_filt'
+        """
+        # Storing the input string that specifies the data sources
+        self.input_string = input_string 
+        
+        # Analyzing the input string to determine whether it's simulated and identifying data sources
+        self.simulated, self.data_sources = analyze_input(input_string) 
+        
+        # Flag to check whether timestamps are placed
+        self.timestamps_placed = False 
+        
+        # Initializing the start_time to current time (to be overwritten when recording starts)
+        self.start_time = datetime.now() 
+        
+        # A flag indicating whether asyncio is used
+        self.uses_asyncio = False 
 
-        # Overwritten by subclass of RecordingDevice
-        self.channels =[] #['TP9', 'AF7', 'AF8', 'TP10'] 
-        self.fs = 0
+        # Placeholder for channels, to be overwritten by subclass
+        self.channels = []  # e.g., ['TP9', 'AF7', 'AF8', 'TP10']
+        self.fs = 0  # Placeholder for sampling frequency, to be overwritten by subclass
 
-        # Additional hardcoded parameters for derivables
-        self.eeg_window_size = 256 # 
-        self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
+        # Hardcoded parameters for derivables
+        self.eeg_window_size = 256  
+        self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)  # Placeholder DataFrame for EEG PSD
 
-
+        # If simulated, initialize the simulated signal
         if self.simulated:
             self.initialize_simulated_signal()
-            # TODO: change the rec_time to the max length of the data
                 
     def compute_bmag(self):
         
@@ -158,13 +160,50 @@ class RecordingDevice:
             self.data['br'].add_timestamps()
 
     def compute_derivables(self):
-        # Run the derivables
-        for data_src,biosignaldata_object in self.data.items():
+        """
+        Computes derivable values (such as processed signals or features) from the raw data.
+        """
+        # Looping through each data source and computing derivables if they are computable
+        for data_src, biosignaldata_object in self.data.items():
             if biosignaldata_object.computable:
-                getattr(self,f'compute_{data_src}')()
-        
-        # Reset the eeg_instantaneous_psd
+                getattr(self, f'compute_{data_src}')()
+
+        # Resetting the eeg_instantaneous_psd DataFrame
         self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
+
+    def compute_ecg_hr(self):
+        self.compute_latest_data('ecg','ecg_hr', 
+                                 self.preprocess_data, 
+                                 10*self.aux_dict['ecg_hr']['sampling_f'],#9
+                                 4*self.aux_dict['ecg_hr']['sampling_f'],
+                                 6*self.aux_dict['ecg_hr']['sampling_f'],
+                                 self.aux_dict['ecg_hr']['sampling_f'])
+
+    def compute_eeg_filt(self):
+        self.compute_latest_data('eeg','eeg_filt', 
+                                 self.preprocess_data, 
+                                 10*self.aux_dict['eeg']['sampling_f'],
+                                 5*self.aux_dict['eeg']['sampling_f'],
+                                 6*self.aux_dict['eeg']['sampling_f'],
+                                 self.aux_dict['eeg']['sampling_f'])
+
+    def compute_eeg_frequency_correlation(self):
+        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
+           self.get_last_psd_all_eeg_channels()
+
+        if not (self.eeg_instantaneous_psd==0).all().all():
+            eeg_correlation = get_eeg_correlation(self.eeg_instantaneous_psd)
+            
+            self.data['eeg_frequency_correlation'].data = self.data['eeg_frequency_correlation'].data.append(eeg_correlation,ignore_index=True)
+
+    def compute_eeg_randomness(self):
+        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
+           self.get_last_psd_all_eeg_channels()
+
+        if not (self.eeg_instantaneous_psd==0).all().all():
+            eeg_randomness = get_eeg_randomness(self.eeg_instantaneous_psd)
+            
+            self.data['eeg_randomness'].data = self.data['eeg_randomness'].data.append(eeg_randomness,ignore_index=True)
 
     def compute_eeg_score(self):
          
@@ -176,39 +215,6 @@ class RecordingDevice:
                                       self.data['eeg_score'].data)
         
         self.data['eeg_score'].data = score_accum 
-
-    def get_last_psd_all_eeg_channels(self):
-        # Assuming eeg_filt has already been computed
-        if len(self.data['eeg_filt'].data)>=self.eeg_window_size:
-            
-            segment = self.data['eeg_filt'].data.drop(columns='Timestamp')[-self.eeg_window_size:]
-            
-            # If the eeg is all zeros set the psd to zeros too
-            if not (segment==0).all().all():
-                freqs,psd_array = welch(segment, fs=self.fs, axis=0)
-            else:
-                psd_array = np.zeros(shape=(1,len(self.channels)))
-                freqs = [0]
-            self.eeg_instantaneous_psd = pd.DataFrame(data=psd_array,columns=self.channels,index=freqs)
-        
-        # If not enough data then leave it empty
-        else:
-            self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
-
-    def compute_eeg_randomness(self):
-        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
-           self.get_last_psd_all_eeg_channels()
-
-        if not (self.eeg_instantaneous_psd==0).all().all():
-            eeg_randomness = get_eeg_randomness(self.eeg_instantaneous_psd)
-            
-            self.data['eeg_randomness'].data = self.data['eeg_randomness'].data.append(eeg_randomness,ignore_index=True)
-    
-    def compute_eeg_3d_score(self):
-        if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
-            self.get_last_psd_all_eeg_channels()
-        df_left,df_right = process_hemispheres_scores(self.eeg_instantaneous_psd,freq_bands=['Delta', 'Theta', 'Alpha'] )
-        self.data['eeg_3d_score'].data = get_3d_score_accum(self.data['eeg_3d_score'].data,df_left,df_right)
     
     def compute_eeg_time_correlation(self):
         time_segment = self.data['eeg_filt'].data.iloc[-self.eeg_window_size:]
@@ -216,32 +222,13 @@ class RecordingDevice:
             eeg_correlation = get_eeg_correlation(time_segment)
             
             self.data['eeg_time_correlation'].data = self.data['eeg_time_correlation'].data.append(eeg_correlation,ignore_index=True)
-    
-    def compute_eeg_frequency_correlation(self):
+
+    def compute_eeg_3d_score(self):
         if self.eeg_instantaneous_psd.empty or (self.eeg_instantaneous_psd==0).all().all(): 
-           self.get_last_psd_all_eeg_channels()
-
-        if not (self.eeg_instantaneous_psd==0).all().all():
-            eeg_correlation = get_eeg_correlation(self.eeg_instantaneous_psd)
-            
-            self.data['eeg_frequency_correlation'].data = self.data['eeg_frequency_correlation'].data.append(eeg_correlation,ignore_index=True)
+            self.get_last_psd_all_eeg_channels()
+        df_left,df_right = process_hemispheres_scores(self.eeg_instantaneous_psd,freq_bands=['Delta', 'Theta', 'Alpha'] )
+        self.data['eeg_3d_score'].data = get_3d_score_accum(self.data['eeg_3d_score'].data,df_left,df_right)
     
-    def compute_eeg_filt(self):
-        self.compute_latest_data('eeg','eeg_filt', 
-                                 self.preprocess_data, 
-                                 10*self.aux_dict['eeg']['sampling_f'],
-                                 5*self.aux_dict['eeg']['sampling_f'],
-                                 6*self.aux_dict['eeg']['sampling_f'],
-                                 self.aux_dict['eeg']['sampling_f'])
-
-    def compute_ecg_hr(self):
-        self.compute_latest_data('ecg','ecg_hr', 
-                                 self.preprocess_data, 
-                                 10*self.aux_dict['ecg_hr']['sampling_f'],#9
-                                 4*self.aux_dict['ecg_hr']['sampling_f'],
-                                 6*self.aux_dict['ecg_hr']['sampling_f'],
-                                 self.aux_dict['ecg_hr']['sampling_f'])
-
     def compute_latest_data(self, input_label,output_label, processing_func, processing_window, minimum_start, correction_window, fs):
         
         input_data_columns = self.aux_dict[input_label]['data_columns']
@@ -320,6 +307,33 @@ class RecordingDevice:
     def fetch_streamed_data(self):
         raise "This function needs to be overwritten by a subclass. The selected recording device has no method 'fetch_streamed_data' "
 
+    def get_last_psd_all_eeg_channels(self):
+        """
+        Computes the Power Spectral Density (PSD) of the last segment of filtered EEG data.
+        Assumes that the filtered EEG data ('eeg_filt') is already computed and available.
+        """
+        # Checking if there is enough data to compute the PSD
+        if len(self.data['eeg_filt'].data) >= self.eeg_window_size:
+            
+            # Getting the last segment of filtered EEG data excluding the timestamp column
+            segment = self.data['eeg_filt'].data.drop(columns='Timestamp')[-self.eeg_window_size:]
+            
+            # Checking if the entire segment is not zero
+            if not (segment == 0).all().all():
+                # If the segment contains non-zero data, computing the PSD using the Welch method
+                freqs, psd_array = welch(segment, fs=self.fs, axis=0)
+            else:
+                # If the segment is all zeros, setting the PSD array to zeros
+                psd_array = np.zeros(shape=(1, len(self.channels)))
+                freqs = [0]
+            
+            # Storing the computed PSD values in a DataFrame with channels as columns and frequencies as indices
+            self.eeg_instantaneous_psd = pd.DataFrame(data=psd_array, columns=self.channels, index=freqs)
+        
+        # If there is not enough data for computing the PSD, initializing an empty DataFrame
+        else:
+            self.eeg_instantaneous_psd = pd.DataFrame(columns=self.channels)
+
     def initialize_data_dict(self):
         # Data dictionary containing a BiosignalData object as values for each data source
         if not check_priorities(self.data_sources,self.aux_dict):
@@ -330,15 +344,24 @@ class RecordingDevice:
         self.data = {data_src:BiosignalData(data_src,self.device_name,self.aux_dict[data_src]) for data_src in self.data_sources}
 
     def initialize_simulated_signal(self):
+        """
+        Initializes simulated signals if the device is set to simulation mode.
+        """
+        # Checking if the device is set to simulation mode
         if self.simulated:
-            self.device_name,self.sim_data = get_device_name_and_data_dict(file_string=self.input_string, aux_dict = self.aux_dict)
+            # Retrieving device name and simulated data
+            self.device_name, self.sim_data = get_device_name_and_data_dict(file_string=self.input_string, aux_dict=self.aux_dict)
+            
+            # Initializing starting point for simulation
             self.sim_starting_point = 0
             self.timestamps_placed = True
-            self.sim_data_speed= 250 # max nb of datapoints to fetch on a given iteration
             
-            # Get the fs for the first df
-            for data_src_name,data_src_df in self.sim_data.items():
-                self.sim_fs = 1/(data_src_df.data.Timestamp.iloc[1]-data_src_df.data.Timestamp.iloc[0]).total_seconds()
+            # Setting the maximum number of datapoints to fetch in a given iteration
+            self.sim_data_speed = 250 
+            
+            # Getting the sampling frequency (fs) for the first data source DataFrame
+            for data_src_name, data_src_df in self.sim_data.items():
+                self.sim_fs = 1 / (data_src_df.data.Timestamp.iloc[1] - data_src_df.data.Timestamp.iloc[0]).total_seconds()
                 break
 
     def preprocess_data(self,data,data_type,fs):
